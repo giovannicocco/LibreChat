@@ -1,17 +1,60 @@
-# REC Implementation Plan for LibreChat Fork
+# Organizational Memory / Context Graph Implementation Plan for LibreChat Fork
 
 This document is an implementation guide for Codex and future contributors.
 
-The goal is to evolve this LibreChat fork into an open-source, self-hosted organizational AI workspace with:
+The goal is not to build a generic LibreChat competitor or duplicate LibreChat's upstream roadmap. LibreChat is already moving quickly toward enterprise self-hosting, groups, roles, access control, dynamic context, MCP, workflows, human-in-the-loop, background agents, and collaboration primitives.
 
-- organization/workspace structure
+This fork should focus on a complementary layer:
+
+> Organizational Memory: persistent, permission-aware company context for humans and agents.
+
+The core technical module is the Context Graph: a structured layer that connects conversations, documents, tools, integrations, memories, agents, workspaces, channels, people, and decisions.
+
+The goal is to extend LibreChat into an open-source, self-hosted organizational AI workspace with:
+
 - shared Slack-like AI channels
-- organizational RAG with permission-aware retrieval
-- organizational memory / REC engine
+- permission-aware organizational RAG
+- organizational memory with proposed/approved lifecycle
+- Context Graph primitives
 - agents as first-class workspace/channel participants
+- integration ingestion for individual and organizational RAG
 - compatibility with existing LibreChat private chats, agents, MCP, permissions, files, and deployment model
 
-REC means shared organizational context: decisions, facts, processes, preferences, customer knowledge, project knowledge, and agent learnings that can be reused safely by humans and agents inside a company.
+## Strategic Boundary
+
+LibreChat upstream is likely to own or improve:
+
+- admin panel
+- generic groups and roles
+- generic ACL and sharing
+- MCP orchestration
+- skills
+- workflows
+- dynamic context
+- background agents
+- HITL tool approvals
+- enterprise configuration profiles
+
+This fork should not treat those generic capabilities as the primary product moat.
+
+This fork should focus on what appears less explicitly solved upstream:
+
+- validated organizational memory
+- Context Graph across humans, agents, tools, documents, integrations, and decisions
+- memory lifecycle: proposed -> approved -> rejected -> archived
+- permission-aware memory retrieval
+- permission-aware organizational RAG
+- context inheritance: channel -> workspace -> organization
+- context ingestion from many external systems
+- provenance, lineage, and source references for memory
+- cross-system contextual continuity
+
+In short:
+
+```txt
+LibreChat = self-hosted AI platform / agentic workspace foundation
+This fork = Organizational Memory + Context Graph layer on top of LibreChat
+```
 
 ## Current Architecture Findings
 
@@ -59,6 +102,8 @@ packages/data-provider/src/accessPermissions.ts
 8. Agents must never access a workspace/channel/document/memory unless the ACL allows it.
 9. Prefer additive migrations over destructive schema changes.
 10. Keep the implementation self-host friendly: no required SaaS dependency.
+11. Do not compete with upstream generic LibreChat features unless necessary for the Organizational Memory layer.
+12. Treat provenance and auditability as first-class requirements.
 
 ## Target Product Model
 
@@ -74,6 +119,8 @@ Tenant
         Knowledge Collections
         Memory Collections / Memory Items
         Agents as members
+        Integration Connections
+        Context Graph Nodes / Edges
 ```
 
 Recommended meaning:
@@ -86,6 +133,7 @@ Recommended meaning:
 - `messageId`: individual message.
 - `Group`: identity/permission group, not a collaborative workspace.
 - `AclEntry`: canonical way to grant permissions to users, groups, roles, and public access.
+- `ContextGraph`: structured relationship layer across memories, documents, integrations, messages, people, agents, and tools.
 
 ## Phase 0: Baseline Validation
 
@@ -101,14 +149,15 @@ Tasks:
 6. Find how the frontend retrieves the conversation list and individual message history.
 7. Find how current file search/RAG is wired.
 8. Find if there is an existing `Project` model, because `accessRole.ts` already references `project` and `file` resource types.
+9. Inspect the latest upstream changes before implementing features that may overlap with LibreChat roadmap work.
 
 Deliverable:
 
-- A short internal note or PR description listing exact files touched and discovered conventions.
+- A short internal note or PR description listing exact files touched, discovered conventions, and upstream overlap risks.
 
 ## Phase 1: Extend Permission Resource Types
 
-Objective: extend the existing ACL/resource permission system so it can govern REC resources.
+Objective: extend the existing ACL/resource permission system so it can govern Organizational Memory and Context Graph resources.
 
 Add or verify these resource types:
 
@@ -120,6 +169,9 @@ knowledgeCollection
 knowledgeDocument
 memoryCollection
 memoryItem
+contextGraphNode
+contextGraphEdge
+integrationConnection
 ```
 
 Likely files:
@@ -158,6 +210,12 @@ MEMORY_COLLECTION_OWNER
 MEMORY_ITEM_VIEWER
 MEMORY_ITEM_EDITOR
 MEMORY_ITEM_OWNER
+CONTEXT_GRAPH_VIEWER
+CONTEXT_GRAPH_EDITOR
+CONTEXT_GRAPH_OWNER
+INTEGRATION_CONNECTION_VIEWER
+INTEGRATION_CONNECTION_EDITOR
+INTEGRATION_CONNECTION_OWNER
 ```
 
 Acceptance criteria:
@@ -555,9 +613,12 @@ KnowledgeDocument {
   organizationId: string;
   workspaceId?: string;
   channelId?: string;
-  sourceType: 'upload' | 'url' | 'integration' | 'activepieces' | 'mcp' | 'manual';
+  sourceType: 'upload' | 'url' | 'integration' | 'nango' | 'activepieces' | 'mcp' | 'manual';
   title: string;
   fileId?: string;
+  externalSource?: string;
+  externalRecordId?: string;
+  externalUpdatedAt?: Date;
   metadata?: Record<string, unknown>;
   uploadedBy: ObjectId | string;
   tenantId?: string;
@@ -605,7 +666,7 @@ Acceptance criteria:
 - Agent retrieves only documents from collections it can access.
 - Cross-workspace leakage tests fail closed.
 
-## Phase 9: Organizational Memory / REC Engine MVP
+## Phase 9: Organizational Memory Engine MVP
 
 Objective: implement memory items that can be proposed, approved, and reused.
 
@@ -654,8 +715,10 @@ MemoryItem {
     | 'task_context';
   content: string;
   summary?: string;
-  sourceType: 'message' | 'document' | 'integration' | 'manual' | 'agent';
+  sourceType: 'message' | 'document' | 'integration' | 'nango' | 'activepieces' | 'mcp' | 'manual' | 'agent';
   sourceId?: string;
+  externalSource?: string;
+  externalRecordId?: string;
   subjectType?: 'customer' | 'project' | 'team' | 'user' | 'agent' | 'organization';
   subjectId?: string;
   status: 'proposed' | 'approved' | 'rejected' | 'archived';
@@ -700,20 +763,93 @@ Acceptance criteria:
 - Rejected memory items are not used.
 - Unauthorized users/agents cannot retrieve restricted memory.
 
-## Phase 10: REC Context Injection
+## Phase 10: Context Graph MVP
 
-Objective: use approved organizational memory and knowledge in agent prompts safely.
+Objective: represent relationships between organizational context entities without requiring a graph database.
+
+Create schemas:
+
+```txt
+packages/data-schemas/src/schema/contextGraphNode.ts
+packages/data-schemas/src/schema/contextGraphEdge.ts
+```
+
+Recommended fields:
+
+```ts
+ContextGraphNode {
+  nodeId: string;
+  organizationId: string;
+  workspaceId?: string;
+  channelId?: string;
+  nodeType:
+    | 'user'
+    | 'agent'
+    | 'conversation'
+    | 'message'
+    | 'document'
+    | 'memory'
+    | 'integration_record'
+    | 'tool'
+    | 'customer'
+    | 'project'
+    | 'decision'
+    | 'process';
+  refId: string;
+  label?: string;
+  metadata?: Record<string, unknown>;
+  tenantId?: string;
+}
+```
+
+```ts
+ContextGraphEdge {
+  edgeId: string;
+  organizationId: string;
+  workspaceId?: string;
+  channelId?: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relationType:
+    | 'mentions'
+    | 'created_by'
+    | 'derived_from'
+    | 'supports'
+    | 'contradicts'
+    | 'updates'
+    | 'belongs_to'
+    | 'uses_tool'
+    | 'connected_to'
+    | 'about';
+  confidence?: number;
+  metadata?: Record<string, unknown>;
+  tenantId?: string;
+}
+```
+
+Do not introduce Neo4j or another graph database in the MVP. Use MongoDB collections first. If graph traversal becomes a bottleneck later, revisit storage.
+
+Acceptance criteria:
+
+- Memory items can link back to source messages/documents/integration records.
+- Documents can link to collections and related memory items.
+- Agent responses can cite Context Graph sources.
+- Permission checks still happen before graph traversal results are used.
+
+## Phase 11: Organizational Context Injection
+
+Objective: use approved organizational memory, Context Graph data, and knowledge in agent prompts safely.
 
 Create a context builder service:
 
 ```txt
-api/server/services/RECContextService.js
+api/server/services/OrganizationalContextService.js
 ```
 
 Suggested API:
 
 ```ts
-buildRECContext({
+buildOrganizationalContext({
   user,
   agent,
   organizationId,
@@ -725,6 +861,8 @@ buildRECContext({
 }): Promise<{
   memories: MemoryItem[];
   knowledgeChunks: KnowledgeChunk[];
+  graphNodes: ContextGraphNode[];
+  graphEdges: ContextGraphEdge[];
   citations: unknown[];
 }>
 ```
@@ -736,17 +874,18 @@ Context priority:
 3. workspace approved memories
 4. organization approved memories
 5. permissioned knowledge chunks
-6. personal memory only when explicitly allowed
+6. relevant Context Graph relations
+7. personal memory only when explicitly allowed
 
 Prompt format suggestion:
 
 ```txt
 You are operating inside an organizational workspace.
-Use only the REC context below if it is relevant.
+Use only the organizational context below if it is relevant.
 Do not reveal memories or documents that are not included.
 If context is insufficient, say so.
 
-REC_CONTEXT:
+ORGANIZATIONAL_MEMORY:
 - Decisions:
 - Policies:
 - Customer facts:
@@ -755,6 +894,9 @@ REC_CONTEXT:
 
 KNOWLEDGE_CONTEXT:
 - Chunk citations...
+
+CONTEXT_GRAPH:
+- Relevant relationships...
 ```
 
 Acceptance criteria:
@@ -763,7 +905,66 @@ Acceptance criteria:
 - Citations/source references are available for knowledge and memory.
 - Unauthorized context is not injected.
 
-## Phase 11: UI MVP
+## Phase 12: Integration Ingestion Layer
+
+Objective: let organizations connect external systems and synchronize context into individual or organizational RAG/memory pipelines.
+
+Recommended approach:
+
+- Nango handles OAuth, refresh tokens, and sync for external SaaS data.
+- Activepieces handles event-driven workflows and external actions.
+- MCP handles tool exposure to agents.
+- LibreChat fork owns identity, ACL, memory, RAG, context, provenance, and collaboration.
+
+Potential entity:
+
+```ts
+IntegrationConnection {
+  connectionId: string;
+  organizationId: string;
+  workspaceId?: string;
+  channelId?: string;
+  provider: 'nango' | 'activepieces' | 'mcp' | 'custom';
+  externalProvider?: string; // e.g. google-drive, gmail, slack, hubspot, github
+  externalConnectionId?: string;
+  name: string;
+  syncMode: 'manual' | 'scheduled' | 'webhook';
+  targetScope: 'user' | 'channel' | 'workspace' | 'organization';
+  targetCollectionId?: string;
+  config: Record<string, unknown>;
+  createdBy: ObjectId | string;
+  tenantId?: string;
+}
+```
+
+Ingestion flow:
+
+```txt
+External SaaS -> Nango sync -> normalized records -> KnowledgeDocument/KnowledgeChunk -> proposed MemoryItems -> ContextGraph nodes/edges
+```
+
+Workflow/action flow:
+
+```txt
+LibreChat event -> Activepieces flow -> external action -> optional Knowledge/Memory update
+```
+
+Rules:
+
+- Integration access must be ACL-controlled.
+- Agent tool access must be scoped by workspace/channel.
+- External data imported into RAG/memory must record source, provider, external record ID, and permission scope.
+- Individual RAG and organizational RAG must remain separate unless explicitly shared.
+- Integration ingestion must be idempotent by provider + external record ID + updated timestamp.
+
+Acceptance criteria:
+
+- A workspace can register an integration connection.
+- A channel agent can use only integrations allowed in that channel/workspace.
+- Imported integration data can be added to knowledge collections or memory proposals.
+- Individual/user-scoped integrations do not leak into organization-scoped RAG.
+
+## Phase 13: UI MVP
 
 Objective: provide minimal usable UI without rebuilding the entire LibreChat frontend.
 
@@ -775,6 +976,8 @@ MVP UI screens:
 4. Agent assignment to channel
 5. Knowledge collection manager
 6. Proposed memory review panel
+7. Integration connection list
+8. Context Graph source/citation viewer
 
 UI principles:
 
@@ -787,6 +990,7 @@ UI principles:
   - system
 - Show channel/workspace context in the header.
 - Show memory/RAG indicators when agent used organizational context.
+- Show integration provenance for external data.
 
 Acceptance criteria:
 
@@ -794,43 +998,7 @@ Acceptance criteria:
 - Shared channel messages show all authors correctly.
 - Proposed memories can be approved/rejected from UI.
 - Agent membership in channel is visible.
-
-## Phase 12: Integration Layer with Activepieces and MCP
-
-Objective: let organizations connect external systems without building every integration directly.
-
-Recommended approach:
-
-- Activepieces handles workflows and integrations.
-- MCP handles tool exposure to agents.
-- LibreChat fork owns identity, ACL, memory, RAG, context, and collaboration.
-
-Potential entities:
-
-```ts
-IntegrationConnection {
-  connectionId: string;
-  organizationId: string;
-  workspaceId?: string;
-  provider: 'activepieces' | 'mcp' | 'custom';
-  name: string;
-  config: Record<string, unknown>;
-  createdBy: ObjectId | string;
-  tenantId?: string;
-}
-```
-
-Rules:
-
-- Integration access must be ACL-controlled.
-- Agent tool access must be scoped by workspace/channel.
-- External data imported into RAG/memory must record source and permission scope.
-
-Acceptance criteria:
-
-- A workspace can register an integration connection.
-- A channel agent can use only integrations allowed in that channel/workspace.
-- Imported integration data can be added to knowledge collections or memory proposals.
+- Integration-sourced memory or RAG items show provenance.
 
 ## Security Requirements
 
@@ -841,11 +1009,13 @@ Codex must treat these as blocking requirements:
 3. No cross-workspace/channel leakage without ACL.
 4. No RAG retrieval without permission filters.
 5. No memory retrieval without permission filters.
-6. No agent tool execution without tool permission checks.
-7. No silent organizational memory auto-approval in MVP.
-8. Keep source references for every organizational memory.
-9. Add tests for negative permission cases.
-10. Prefer fail-closed behavior.
+6. No Context Graph traversal without permission filters.
+7. No agent tool execution without tool permission checks.
+8. No silent organizational memory auto-approval in MVP.
+9. Keep source references for every organizational memory.
+10. Add tests for negative permission cases.
+11. Prefer fail-closed behavior.
+12. Keep individual/user-scoped RAG separate from organizational RAG by default.
 
 ## Suggested Test Cases
 
@@ -871,6 +1041,7 @@ Codex must treat these as blocking requirements:
 - Workspace A document is not returned in Workspace B search.
 - Channel-private document is not returned to workspace-only users.
 - Agent cannot retrieve collection without ACL.
+- User-scoped integration data is not returned in organization-scoped retrieval unless shared.
 
 ### Memory
 
@@ -878,6 +1049,13 @@ Codex must treat these as blocking requirements:
 - Approved memory is injected into context.
 - Rejected memory is never injected.
 - Restricted memory is visible only to authorized principals.
+- Memory item retains source/provenance.
+
+### Context Graph
+
+- Memory item links to source message/document.
+- Graph traversal excludes unauthorized nodes.
+- Agent response can cite graph-derived source.
 
 ### Backward Compatibility
 
@@ -891,18 +1069,19 @@ Codex must treat these as blocking requirements:
 Use separate PRs/branches:
 
 ```txt
-rec/01-resource-types
-rec/02-org-workspace-channel-schemas
-rec/03-conversation-message-scopes
-rec/04-permission-service
-rec/05-channel-api
-rec/06-shared-chat-mvp
-rec/07-agent-channel-membership
-rec/08-org-rag
-rec/09-memory-engine
-rec/10-context-injection
-rec/11-ui-mvp
-rec/12-activepieces-mcp-scoping
+om/01-resource-types
+om/02-org-workspace-channel-schemas
+om/03-conversation-message-scopes
+om/04-permission-service
+om/05-channel-api
+om/06-shared-chat-mvp
+om/07-agent-channel-membership
+om/08-org-rag
+om/09-memory-engine
+om/10-context-graph
+om/11-context-injection
+om/12-integration-ingestion
+om/13-ui-mvp
 ```
 
 Do not implement all phases in one PR.
@@ -923,10 +1102,12 @@ When Codex works on this repo:
 10. Make small, reviewable commits.
 11. Document any migration assumptions in the PR body.
 12. If a decision is ambiguous, choose the safer permission model.
+13. Avoid implementing generic LibreChat roadmap features unless they are required for Organizational Memory.
+14. Treat upstream compatibility as valuable unless it compromises the Context Graph layer.
 
 ## MVP Scope Definition
 
-The first credible MVP is not the full REC engine.
+The first credible MVP is not the full Context Graph.
 
 The first credible MVP is:
 
@@ -937,6 +1118,7 @@ The first credible MVP is:
 5. agent as channel participant
 6. proposed/approved channel memory
 7. permission-aware context injection for approved memory
+8. basic provenance/source references
 
 Do not include in MVP:
 
@@ -947,8 +1129,9 @@ Do not include in MVP:
 - autonomous workflow marketplace
 - hundreds of integrations
 - automatic enterprise-grade data sync
+- advanced graph analytics
 
-## Strategic Product Boundary
+## Final Product Positioning
 
 LibreChat already provides:
 
@@ -959,13 +1142,15 @@ LibreChat already provides:
 - auth foundation
 - self-host deployment
 - partial group/ACL sharing primitives
+- emerging enterprise/agentic roadmap
 
 This fork should add:
 
-- collaborative workspace model
 - shared AI channels
 - permission-aware organizational RAG
-- organizational memory / REC
-- agents participating in team context
+- Organizational Memory
+- Context Graph
+- integration-sourced context ingestion
+- agents participating in persistent team context
 
-The differentiation is not another ChatGPT UI. The differentiation is contextual continuity across humans and agents inside a self-hosted organization.
+The differentiation is not another ChatGPT UI. The differentiation is contextual continuity across humans, agents, tools, documents, and business systems inside a self-hosted organization.
